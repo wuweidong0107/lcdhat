@@ -15,8 +15,6 @@
 #include FT_FREETYPE_H
 #include FT_GLYPH_H
 
-unsigned char *hzk_mem;
-
 static unsigned char *fb_mem;
 static int screen_bytes;
 static int line_bytes;
@@ -24,13 +22,14 @@ static int pixel_bytes;
 static struct fb_var_screeninfo var;
 static struct fb_fix_screeninfo fix;
 
+static int fontsize;
+static int fontcolor;
 static FT_Library    library;
 static FT_Face       face;
 static FT_GlyphSlot  slot;
 static FT_Matrix     matrix;                 /* transformation matrix */
 static FT_Vector     pen;                    /* untransformed origin  */
 static FT_Error      error;
-static unsigned int fontsize;
 
 static void fb_draw_pixel(int x, int y, int color)
 {
@@ -64,7 +63,7 @@ static void fb_draw_pixel(int x, int y, int color)
     }
 }
 
-static void fb_draw_bitmap(FT_Bitmap*  bitmap, FT_Int x, FT_Int y)
+static void fb_draw_bitmap(FT_Bitmap*  bitmap, FT_Int x, FT_Int y, int color)
 {
     FT_Int  i, j, p, q;
     FT_Int  x_max = x + bitmap->width;
@@ -75,7 +74,11 @@ static void fb_draw_bitmap(FT_Bitmap*  bitmap, FT_Int x, FT_Int y)
         for (j = y, q = 0; j < y_max; j++, q++) {
             if (i < 0 || j < 0 || i >= (FT_Int)var.xres || j >= (FT_Int)var.yres)
                 continue;
-            fb_draw_pixel(i, j, bitmap->buffer[q * bitmap->width + p]);
+
+            if (bitmap->buffer[q * bitmap->width + p] != 0)
+                fb_draw_pixel(i, j, color);
+            else
+                fb_draw_pixel(i, j, 0);
         }
     }
 }
@@ -86,16 +89,30 @@ void fb_exit()
     FT_Done_FreeType(library);
 }
 
-void fb_print(const char *str)
+void fb_ft_print(const char *str, int line, int size, int color)
 {
     unsigned int n = 0;
-    int line = 1;
+
+    if (size > 0) {
+        fontsize = size;
+        FT_Set_Pixel_Sizes(face, fontsize, 0);
+    }
+
+    if (line < 1 && (unsigned int )line*fontsize > var.yres)
+        return;
 
     /* start at (0,40) relative to the upper left corner  */
     pen.x = 0 * 64;
-    pen.y = (var.yres- fontsize) * 64;
+    pen.y = (var.yres- fontsize*line) * 64;
 
     for (n = 0; n < strlen(str); n++) {
+        if (str[n] == '\n') {
+            line++;
+            pen.x = 0 * 64;
+            pen.y = (var.yres - fontsize*line) * 64;
+            continue;
+        }
+
         FT_Set_Transform(face, &matrix, &pen);
 
         error = FT_Load_Char(face, str[n], FT_LOAD_RENDER);
@@ -103,23 +120,26 @@ void fb_print(const char *str)
             continue;                 /* ignore errors */
         
         /* now, draw to our target surface (convert position) */
-        fb_draw_bitmap( &slot->bitmap, slot->bitmap_left, var.yres - slot->bitmap_top );
+        fb_draw_bitmap( &slot->bitmap, slot->bitmap_left, var.yres - slot->bitmap_top, color);
 
         /* increment pen position */
-        if ((slot->bitmap_left + fontsize) > var.xres) {
+        if ((unsigned int )(slot->bitmap_left + fontsize) >= var.xres) {
             line++;
             pen.x = 0 * 64;
-            pen.y = (var.yres- fontsize*line) * 64;
+            pen.y = (var.yres - fontsize*line) * 64;
         } else {
             pen.x += slot->advance.x;
             pen.y += slot->advance.y;
         }
-
-        printf("x=%d slot->bitmap_left=%d\n", pen.x, slot->bitmap_left);
     }
 }
 
-int fb_init(int fd, const char *font, unsigned int size)
+void fb_clear()
+{
+    memset(fb_mem, 0, screen_bytes);
+}
+
+int fb_ft_init(int fd, const char *font, int size, int color)
 {
     double angle = 0;
     
@@ -151,6 +171,7 @@ int fb_init(int fd, const char *font, unsigned int size)
     }
 
     fontsize = size;
+    fontcolor = color;
     FT_Set_Pixel_Sizes(face, fontsize, 0);
     slot = face->glyph;
 
