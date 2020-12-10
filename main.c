@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <signal.h>
 
+#define LCDHAT_HELPER "/usr/local/bin/lcdhat-helper.sh"
 #define KEY_MAX_NUM 32
 #define KEY_MAX_CMD 512
 #define DEFAULT_FONTSIZE 28
@@ -17,10 +18,9 @@
 #define UNUSED(x) (void)(x)
 
 extern int input_poll(int fd, int timeout);
-extern int fb_ft_init(int fd, const char *font, unsigned int size, unsigned int color);
-extern void fb_ft_print(const char *str, int line, unsigned int size, unsigned int color);
+extern int fb_init(int fd, const char *font, unsigned int size, unsigned int color);
+extern void fb_update(const char *str, int line, unsigned int size, unsigned int color);
 extern void fb_exit();
-extern void fb_clear();
 
 static int exiting = 0;
 
@@ -79,8 +79,7 @@ static void *show_thread(void *arg)
             chars_read = fread(str, sizeof(char), 1024, read_fp);
             pthread_cleanup_pop(1);
             if (chars_read > 0) {
-                fb_clear();
-                fb_ft_print(str, 1, lh->kc[i].fontsize, 0xffffff);
+                fb_update(str, 1, lh->kc[i].fontsize, 0xffffff);
             }
         }
         sleep(1);
@@ -117,7 +116,7 @@ void load_conf(struct lcdhat *lh)
 
     for (i=0; i<4; i++) {
         lh->kc[i].fontsize = DEFAULT_FONTSIZE;
-        sprintf(lh->kc[i].cmd, "./lcdhat-helper.sh %d", i+1);
+        sprintf(lh->kc[i].cmd, LCDHAT_HELPER" %d", i+1);
     }
 }
 
@@ -149,8 +148,13 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
-    if (fb_ft_init(lh.fb_fd, argv[3], DEFAULT_FONTSIZE, DEFAULT_FONTCOLOR) < 0) {
+    if (fb_init(lh.fb_fd, argv[3], DEFAULT_FONTSIZE, DEFAULT_FONTCOLOR) < 0) {
         fprintf(stderr, "fail to fb_ft_init");
+        exit(EXIT_FAILURE);
+    }
+
+    if(access(LCDHAT_HELPER, X_OK) < 0) {
+        fprintf(stderr, "%s not found, please make && make install\n", LCDHAT_HELPER);
         exit(EXIT_FAILURE);
     }
 
@@ -171,10 +175,13 @@ int main(int argc, char **argv)
     }
     thread_num++;
 
+    printf("waiting key event...\n");
     while(1) {
         res = input_poll(lh.input_fd, 1);
         if (res>0 || exiting==1) {
             keycode = res;
+            if (exiting != 1)
+                printf("key code: %d\n", keycode);
             if (thread_num > 0) {
                 res = pthread_cancel(last_thread);
                 if (res != 0) {

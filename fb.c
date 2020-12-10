@@ -16,6 +16,7 @@
 #include FT_GLYPH_H
 
 static unsigned char *fb_mem;
+static unsigned char *fb_mem_buf;
 static int screen_bytes;
 static int line_bytes;
 static int pixel_bytes;
@@ -31,9 +32,9 @@ static FT_Matrix     matrix;                 /* transformation matrix */
 static FT_Vector     pen;                    /* untransformed origin  */
 static FT_Error      error;
 
-static void fb_draw_pixel(int x, int y, int color)
+static void fb_update_pixel(int x, int y, int color)
 {
-    unsigned char *pixel_8 = fb_mem + y * line_bytes + x * pixel_bytes;
+    unsigned char *pixel_8 = fb_mem_buf + y * line_bytes + x * pixel_bytes;
     unsigned short *pixel_16 = (unsigned short *)(pixel_8);
     unsigned int *pixel_32 = (unsigned int *)(pixel_8);
     int red,green,blue;
@@ -63,7 +64,7 @@ static void fb_draw_pixel(int x, int y, int color)
     }
 }
 
-static void fb_draw_bitmap(FT_Bitmap*  bitmap, FT_Int x, FT_Int y, int color)
+static void fb_update_bitmap(FT_Bitmap*  bitmap, FT_Int x, FT_Int y, int color)
 {
     FT_Int  i, j, p, q;
     FT_Int  x_max = x + bitmap->width;
@@ -76,16 +77,24 @@ static void fb_draw_bitmap(FT_Bitmap*  bitmap, FT_Int x, FT_Int y, int color)
                 continue;
 
             if (bitmap->buffer[q * bitmap->width + p] != 0)
-                fb_draw_pixel(i, j, color);
+                fb_update_pixel(i, j, color);
             else
-                fb_draw_pixel(i, j, 0);
+                fb_update_pixel(i, j, 0);
         }
     }
 }
 
+void fb_flush()
+{
+    memcpy(fb_mem, fb_mem_buf, screen_bytes);
+}
+
 void fb_clear()
 {
-    memset(fb_mem, 0, screen_bytes);
+    unsigned int x,y;
+    for(y=0; y<var.yres; y++)
+        for(x=0; x<var.xres; x++)
+            fb_update_pixel(x, y, 0);
 }
 
 void fb_exit()
@@ -93,9 +102,11 @@ void fb_exit()
     fb_clear();
     FT_Done_Face(face);
     FT_Done_FreeType(library);
+    munmap(fb_mem, screen_bytes);
+    free(fb_mem_buf);
 }
 
-void fb_ft_print(const char *str, int line, int size, int color)
+void fb_update(const char *str, int line, int size, int color)
 {
     unsigned int n = 0;
 
@@ -111,6 +122,7 @@ void fb_ft_print(const char *str, int line, int size, int color)
     pen.x = 0 * 64;
     pen.y = (var.yres- fontsize*line) * 64;
 
+    fb_clear();
     for (n = 0; n < strlen(str); n++) {
         if (str[n] == '\n') {
             line++;
@@ -126,7 +138,7 @@ void fb_ft_print(const char *str, int line, int size, int color)
             continue;                 /* ignore errors */
         
         /* now, draw to our target surface (convert position) */
-        fb_draw_bitmap( &slot->bitmap, slot->bitmap_left, var.yres - slot->bitmap_top, color);
+        fb_update_bitmap( &slot->bitmap, slot->bitmap_left, var.yres - slot->bitmap_top, color);
 
         /* increment pen position */
         if ((unsigned int )(slot->bitmap_left + fontsize) >= var.xres) {
@@ -138,9 +150,10 @@ void fb_ft_print(const char *str, int line, int size, int color)
             pen.y += slot->advance.y;
         }
     }
+    fb_flush();
 }
 
-int fb_ft_init(int fd, const char *font, int size, int color)
+int fb_init(int fd, const char *font, int size, int color)
 {
     double angle = 0;
     
@@ -158,7 +171,11 @@ int fb_ft_init(int fd, const char *font, int size, int color)
     pixel_bytes = var.bits_per_pixel / 8;
     
     if ((fb_mem = mmap(NULL, screen_bytes, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0)) == MAP_FAILED) {
-        fprintf(stderr, "fail to mmap\n");
+        return -1;
+    }
+    fb_mem_buf = malloc(screen_bytes);
+    if (fb_mem_buf == NULL) {
+        munmap(fb_mem, screen_bytes);
         return -1;
     }
 
