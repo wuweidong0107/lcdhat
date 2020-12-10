@@ -22,7 +22,7 @@ function key1_handler()
 
 function key2_handler()
 {
-    printf "This is key2.\n\nDefine in lcdhat-helper.sh."
+    date
 }
 
 function key3_handler()

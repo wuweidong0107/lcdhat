@@ -83,8 +83,14 @@ static void fb_draw_bitmap(FT_Bitmap*  bitmap, FT_Int x, FT_Int y, int color)
     }
 }
 
+void fb_clear()
+{
+    memset(fb_mem, 0, screen_bytes);
+}
+
 void fb_exit()
 {
+    fb_clear();
     FT_Done_Face(face);
     FT_Done_FreeType(library);
 }
@@ -132,11 +138,6 @@ void fb_ft_print(const char *str, int line, int size, int color)
             pen.y += slot->advance.y;
         }
     }
-}
-
-void fb_clear()
-{
-    memset(fb_mem, 0, screen_bytes);
 }
 
 int fb_ft_init(int fd, const char *font, int size, int color)

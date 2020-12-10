@@ -8,19 +8,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-
-#include "inih/ini.h"
+#include <signal.h>
 
 #define KEY_MAX_NUM 32
 #define KEY_MAX_CMD 512
 #define DEFAULT_FONTSIZE 28
 #define DEFAULT_FONTCOLOR 0xFFFFFF
+#define UNUSED(x) (void)(x)
 
-extern int input_poll(int fd);
+extern int input_poll(int fd, int timeout);
 extern int fb_ft_init(int fd, const char *font, unsigned int size, unsigned int color);
 extern void fb_ft_print(const char *str, int line, unsigned int size, unsigned int color);
 extern void fb_exit();
 extern void fb_clear();
+
+static int exiting = 0;
 
 struct keycmd {
     int code;
@@ -35,7 +37,14 @@ struct lcdhat {
     struct keycmd kc[KEY_MAX_NUM];
 };
 
-void *show_thread(void *arg)
+static void show_thread_cleanup(void *arg)
+{
+    FILE *read_fp = (FILE *)arg;
+    if (read_fp != NULL)
+        pclose(read_fp);
+}
+
+static void *show_thread(void *arg)
 {
     int res;
     struct lcdhat *lh = (struct lcdhat *)arg;
@@ -66,7 +75,9 @@ void *show_thread(void *arg)
     while(1) {
         read_fp = popen(lh->kc[i].cmd, "r");
         if (read_fp != NULL) {
+            pthread_cleanup_push(show_thread_cleanup, read_fp);
             chars_read = fread(str, sizeof(char), 1024, read_fp);
+            pthread_cleanup_pop(1);
             if (chars_read > 0) {
                 fb_clear();
                 fb_ft_print(str, 1, lh->kc[i].fontsize, 0xffffff);
@@ -76,6 +87,24 @@ void *show_thread(void *arg)
     }
     pthread_exit(0);
 }
+
+void handle_signal(int sig)
+{
+    UNUSED(sig);
+    exiting = 1;
+}
+
+void install_signal_handler()
+{
+    struct sigaction handler;
+    handler.sa_handler = handle_signal;
+    sigfillset(&handler.sa_mask);
+    handler.sa_flags=0;
+    sigaction(SIGINT,&handler,0);
+    sigaction(SIGTERM,&handler,0);
+    sigaction(SIGHUP,&handler,0);
+}
+
 
 void load_conf(struct lcdhat *lh)
 {
@@ -92,6 +121,13 @@ void load_conf(struct lcdhat *lh)
     }
 }
 
+void cleanup(struct lcdhat *lh)
+{
+    fb_exit();
+    close(lh->input_fd);
+    close(lh->fb_fd);
+}
+
 int main(int argc, char **argv)
 {
     struct lcdhat lh;
@@ -103,8 +139,8 @@ int main(int argc, char **argv)
 
     lh.input_fd = open(argv[1], O_RDWR);
     if (lh.input_fd < 0) {
-        close(lh.fb_fd);
         fprintf(stderr, "fail to open %s\n", argv[1]);
+        exit(EXIT_FAILURE);
     }
 
     lh.fb_fd = open(argv[2], O_RDWR);
@@ -119,20 +155,26 @@ int main(int argc, char **argv)
     }
 
     load_conf(&lh);
+    install_signal_handler();
 
     int res, keycode;
     int thread_num = 0;
     pthread_t last_thread;
 
+    // default show thread
     lh.key = 258;
     res = pthread_create(&last_thread, NULL, show_thread, &lh);
     if (res != 0) {
         fprintf(stderr, "fail to pthread_create");
+        cleanup(&lh);
+        exit(EXIT_FAILURE);
     }
     thread_num++;
 
     while(1) {
-        if ((keycode = input_poll(lh.input_fd)) >=0) {
+        res = input_poll(lh.input_fd, 1);
+        if (res>0 || exiting==1) {
+            keycode = res;
             if (thread_num > 0) {
                 res = pthread_cancel(last_thread);
                 if (res != 0) {
@@ -145,8 +187,11 @@ int main(int argc, char **argv)
                     fprintf(stderr, "fail to pthread_join");
                     exit(EXIT_FAILURE);
                 }
-                thread_num = 0;
+                thread_num--;
+                if (exiting && thread_num == 0)
+                    break;
             }
+
             if (thread_num == 0) {
                 lh.key = keycode;
                 res = pthread_create(&last_thread, NULL, show_thread, &lh);
@@ -157,7 +202,6 @@ int main(int argc, char **argv)
             }
         }
     }
-    fb_exit();
-    close(lh.input_fd);
-    close(lh.fb_fd);
+    cleanup(&lh);
+    printf("bye!\n");
 }
