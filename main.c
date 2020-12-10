@@ -148,6 +148,11 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
+    if(access(argv[3], R_OK) < 0) {
+        fprintf(stderr, "%s not found\n", argv[3]);
+        exit(EXIT_FAILURE);
+    }
+
     if (fb_init(lh.fb_fd, argv[3], DEFAULT_FONTSIZE, DEFAULT_FONTCOLOR) < 0) {
         fprintf(stderr, "fail to fb_ft_init");
         exit(EXIT_FAILURE);
